@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Env file
+.env
+
+# Sample request and response files used for reference when writing OpenRouter interaction
+request.json
+response.json
