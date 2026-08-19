@@ -20,6 +20,11 @@ asyncio_mode = "auto"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "ruff>=0.16.3",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["agent"]
 

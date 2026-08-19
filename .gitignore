@@ -12,6 +12,9 @@ wheels/
 # Env file
 .env
 
+# Jet Brains
+.idea/*
+
 # Sample request and response files used for reference when writing OpenRouter interaction
 request.json
 response.json
