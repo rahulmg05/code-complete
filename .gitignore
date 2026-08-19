@@ -18,3 +18,7 @@ wheels/
 # Sample request and response files used for reference when writing OpenRouter interaction
 request.json
 response.json
+
+# AI workfiles
+claude*
+coding-agent*
