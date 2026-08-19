@@ -50,7 +50,31 @@ SHELL_TOOL = {
     },
   },
 }
-TOOLS = [READ_TOOL, WRITE_TOOL, SHELL_TOOL]
+
+EDIT_TOOL = {
+  "type": "function",
+  "function": {
+    "name": "edit",
+    "description": "Replace one exact, unique substring in a file you've already read.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string"},
+        "old": {
+          "type": "string",
+          "description": "Exact text to find, whitespace included; must occur exactly once.",
+        },
+        "new": {
+          "type": "string",
+          "description": "Replacement text",
+        },
+      },
+      "required": ["path", "old", "new"],
+    },
+  },
+}
+
+TOOLS = [READ_TOOL, WRITE_TOOL, SHELL_TOOL, EDIT_TOOL]
 WORKDIR = os.getcwd()
 WORKROOT = os.path.realpath(WORKDIR)
 _read_paths = set()
@@ -81,6 +105,7 @@ def read_file(path):
   if b"\x00" in data:
     return f"{path} is a binary file; refusing to read"
 
+  _read_paths.add(abspath(path))
   return data.decode("utf-8", errors="replace")
 
 
@@ -115,6 +140,31 @@ def write_file(path, content):
   return f"successfully wrote to {path}; bytes written {len(content)}"
 
 
+def edit_file(path, old, new):
+  """Edit a UTF-8 text file. Replace the old content with new"""
+  full = abspath(path)
+  if full not in _read_paths:
+    return f"refused: please read before editing {path}"
+  if not os.path.exists(full):
+    return f"refused: {full} does not exist"
+  with open(full, encoding="utf-8") as f:
+    text = f.read()
+  n = text.count(old)
+
+  if n == 0:
+    return "refused: no match found to edit the file"
+  if n > 1:
+    return (
+      f"refused: found {n} matches - add surrounding context so that match is unique"
+    )
+
+  new_text = text.replace(old, new)
+  with open(full, "w", encoding="utf-8") as f:
+    f.write(new_text)
+
+  return f"successfully edited {path}; bytes written {len(new_text)}"
+
+
 def dispatch(name, args):
   """Run a tool that is passed in as an argument.
   Returns unknown tool error if tool not found.
@@ -141,6 +191,13 @@ def dispatch(name, args):
       return "shell 'timeout' must be a number of seconds"
 
     return run_shell(command, timeout)
+  elif name == "edit":
+    path, old, new = args.get("path"), args.get("old"), args.get("new")
+    if (
+      not isinstance(path, str) or not isinstance(old, str) or not isinstance(new, str)
+    ):
+      return "edit requires string path and string old and string new"
+    return edit_file(path, old, new)
 
   return f"Error: Tool name {name} not found"
 
