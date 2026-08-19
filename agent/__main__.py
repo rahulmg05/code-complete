@@ -1,4 +1,5 @@
 import os
+import subprocess
 
 from agent.llm import complete
 
@@ -27,7 +28,29 @@ WRITE_TOOL = {
     },
   },
 }
-TOOLS = [READ_TOOL, WRITE_TOOL]
+
+SHELL_TOOL = {
+  "type": "function",
+  "function": {
+    "name": "shell",
+    "description": (
+      "Run a one-shot bash command from the working directory and return its "
+      "combined stdout+stderr and exit code. No state persists between calls."
+    ),
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "command": {"type": "string"},
+        "timeout": {
+          "type": "integer",
+          "description": "Seconds before the command is killed (default 30, max 600).",
+        },
+      },
+      "required": ["command"],
+    },
+  },
+}
+TOOLS = [READ_TOOL, WRITE_TOOL, SHELL_TOOL]
 WORKDIR = os.getcwd()
 WORKROOT = os.path.realpath(WORKDIR)
 _read_paths = set()
@@ -61,6 +84,22 @@ def read_file(path):
   return data.decode("utf-8", errors="replace")
 
 
+def run_shell(command, timeout=30):
+  """Run a shell command and return its output."""
+  try:
+    proc = subprocess.run(
+      ["bash", "--norc", "--noprofile", "-c", command],
+      cwd=WORKDIR,
+      stdout=subprocess.PIPE,
+      stderr=subprocess.STDOUT,
+      text=True,
+      timeout=min(timeout, 600),
+    )
+  except subprocess.TimeoutExpired:
+    return f"timed out after {timeout}s"
+  return f"exit {proc.returncode}\n{proc.stdout[:10000]}"
+
+
 def write_file(path, content):
   """Create and/or write a UTF-8 text file."""
   full = abspath(path)
@@ -84,12 +123,24 @@ def dispatch(name, args):
     path = args.get("path")
     if not isinstance(path, str):
       return f"Path must be a string; got {path}"
+
+    return read_file(path)
   elif name == "write":
     path, content = args.get("path"), args.get("content")
     if not isinstance(path, str) or not isinstance(content, str):
       return "write requires string path and content"
 
     return write_file(path, content)
+  elif name == "shell":
+    command = args.get("command")
+    if not isinstance(command, str):
+      return "shell requires a string 'command'"
+    try:
+      timeout = int(args.get("timeout", 30))
+    except TypeError, ValueError:
+      return "shell 'timeout' must be a number of seconds"
+
+    return run_shell(command, timeout)
 
   return f"Error: Tool name {name} not found"
 
@@ -118,11 +169,16 @@ def main():
     "You are a coding agent working in the current directory. \n"
     "You have these tools:\n"
     "read(path) returns the UTF-8 contents of \n "
-    "a text file. Use it to inspect files before answering questions \n"
-    "about them.\n"
+    "a text file. Use it to inspect files before answering questions about them.\n"
     "write(path, content) creates or overwrites a file; you must read an \n"
     "existing file before overwriting it.\n"
-    ""
+    "shell(command, timeout=30) runs a single bash command from the working \n"
+    "directory; it is one-shot, so no cwd, environment, or virtualenv \n"
+    "persists between calls — chain dependent steps in one command with &&.\n"
+    "Use it to explore and navigate the project (ls, grep -rn, find, cat) \n"
+    "rather than expecting dedicated search tools. Raise the timeout for slow\n"
+    "operations like builds, tests, or docker, which may produce no output until\n"
+    "they finish."
   )
   messages = []
   print("agent ready (ctrl-c or ctrl-d to quit)")
