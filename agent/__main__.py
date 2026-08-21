@@ -1,6 +1,8 @@
 import os
 import subprocess
+import time
 
+from agent import ui
 from agent.llm import complete
 
 READ_TOOL = {
@@ -204,10 +206,11 @@ def dispatch(name, args):
 
 def run_turn(messages, system_prompt):
   while True:
-    turn = complete(messages, system_prompt, TOOLS)
+    with ui.thinking("thinking..."):
+      turn = complete(messages, system_prompt, TOOLS)
     messages.append(turn.message)
     if turn.note:
-      print(f"{turn.note}")
+      ui.print_note(turn.note)
 
     if not turn.tool_calls:
       return turn.message["content"]
@@ -216,7 +219,11 @@ def run_turn(messages, system_prompt):
       if tool_call.parse_error:
         result = f"Error: {tool_call.parse_error}"
       else:
-        result = dispatch(tool_call.name, tool_call.args)
+        ui.print_tool_call(tool_call.name, tool_call.args)
+        started = time.monotonic()
+        with ui.thinking(f"running {tool_call.name}..."):
+          result = dispatch(tool_call.name, tool_call.args)
+        ui.print_tool_result(result, elapsed=time.monotonic() - started)
 
       messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
 
@@ -237,11 +244,12 @@ def main():
     "operations like builds, tests, or docker, which may produce no output until\n"
     "they finish."
   )
+
   messages = []
   print("agent ready (ctrl-c or ctrl-d to quit)")
   while True:
     try:
-      line = input("you> ").strip()
+      line = ui.get_input().strip()
     except EOFError, KeyboardInterrupt:
       print()
       break
@@ -251,11 +259,7 @@ def main():
 
     messages.append({"role": "user", "content": line})
     answer = run_turn(messages, system_prompt)
-    print(
-      f"code-complete>\n{answer}"
-      if answer
-      else "\ncode-complete> Agent did not return anything"
-    )
+    ui.print_agent_message(answer)
 
 
 if __name__ == "__main__":
