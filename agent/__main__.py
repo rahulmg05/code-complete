@@ -1,8 +1,10 @@
+import argparse
 import os
+import pathlib
 import subprocess
 import time
 
-from agent import ui
+from agent import session, ui
 from agent.llm import complete
 
 READ_TOOL = {
@@ -208,7 +210,7 @@ def run_turn(messages, system_prompt):
   while True:
     with ui.thinking("thinking..."):
       turn = complete(messages, system_prompt, TOOLS)
-    messages.append(turn.message)
+    session.add(messages, turn.message)
     if turn.note:
       ui.print_note(turn.note)
 
@@ -225,10 +227,27 @@ def run_turn(messages, system_prompt):
           result = dispatch(tool_call.name, tool_call.args)
         ui.print_tool_result(result, elapsed=time.monotonic() - started)
 
-      messages.append({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+      session.add(
+        messages, {"role": "tool", "tool_call_id": tool_call.id, "content": result}
+      )
+
+
+def args_parse():
+  p = argparse.ArgumentParser(prog="agent")
+  p.add_argument(
+    "--resume",
+    nargs="?",
+    const=session.Resume.LATEST,
+    default=None,
+    metavar="PATH",
+    help="resume a session; latest if none is provided",
+  )
+
+  return p.parse_args()
 
 
 def main():
+  args = args_parse()
   system_prompt = (
     "You are a coding agent working in the current directory. \n"
     "You have these tools:\n"
@@ -246,7 +265,23 @@ def main():
   )
 
   messages = []
+  resumed = None
+  if args.resume is not None:
+    if args.resume == session.Resume.LATEST:
+      resumed = session.latest()
+      if resumed is None:
+        raise SystemExit("Latest session not found")
+    else:
+      resumed = pathlib.Path(args.resume).expanduser()
+      if not resumed.exists():
+        raise SystemExit(f"session {resumed} not found")
+    messages = session.load(resumed)
+    session.use(resumed)
+
   print("agent ready (ctrl-c or ctrl-d to quit)")
+  if resumed:
+    ui.print_note(f"resumed {resumed.name} — {len(messages)} messages")
+
   while True:
     try:
       line = ui.get_input().strip()
@@ -257,7 +292,7 @@ def main():
     if not line:
       continue
 
-    messages.append({"role": "user", "content": line})
+    session.add(messages, {"role": "user", "content": line})
     answer = run_turn(messages, system_prompt)
     ui.print_agent_message(answer)
 
