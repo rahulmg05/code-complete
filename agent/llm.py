@@ -11,7 +11,9 @@ client = OpenAI(
   base_url="https://openrouter.ai/api/v1",
   api_key=os.getenv("OPENROUTER_API_KEY"),
 )
-MAX_TOKENS = 4096
+# Step 11 promotes this to models.json; a module-level constant is the first move.
+MODEL = os.getenv("CODE_COMPLETE_MODEL", "anthropic/claude-sonnet-4.5")
+MAX_TOKENS = 16384
 
 
 @dataclass
@@ -36,7 +38,7 @@ def complete(messages, system_prompt=None, tools=None):
     wire = [{"role": "system", "content": system_prompt}] + messages
 
   response = client.chat.completions.create(
-    model="anthropic/claude-haiku-4.5",
+    model=MODEL,
     messages=wire,
     tools=tools or [],
     max_tokens=MAX_TOKENS,

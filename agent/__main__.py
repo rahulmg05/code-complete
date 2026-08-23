@@ -1,240 +1,15 @@
 import argparse
-import os
 import pathlib
-import subprocess
-import time
 
 from agent import session, ui
-from agent.llm import complete
-
-READ_TOOL = {
-  "type": "function",
-  "function": {
-    "name": "read",
-    "description": "Read a UTF-8 text file and return its contents",
-    "parameters": {
-      "type": "object",
-      "properties": {"path": {"type": "string"}},
-      "required": ["path"],
-    },
-  },
-}
-
-WRITE_TOOL = {
-  "type": "function",
-  "function": {
-    "name": "write",
-    "description": "Create or overwrite a UTF-8 text file",
-    "parameters": {
-      "type": "object",
-      "properties": {"path": {"type": "string"}, "content": {"type": "string"}},
-      "required": ["path", "content"],
-    },
-  },
-}
-
-SHELL_TOOL = {
-  "type": "function",
-  "function": {
-    "name": "shell",
-    "description": (
-      "Run a one-shot bash command from the working directory and return its "
-      "combined stdout+stderr and exit code. No state persists between calls."
-    ),
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "command": {"type": "string"},
-        "timeout": {
-          "type": "integer",
-          "description": "Seconds before the command is killed (default 30, max 600).",
-        },
-      },
-      "required": ["command"],
-    },
-  },
-}
-
-EDIT_TOOL = {
-  "type": "function",
-  "function": {
-    "name": "edit",
-    "description": "Replace one exact, unique substring in a file you've already read.",
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "path": {"type": "string"},
-        "old": {
-          "type": "string",
-          "description": "Exact text to find, whitespace included; must occur exactly once.",
-        },
-        "new": {
-          "type": "string",
-          "description": "Replacement text",
-        },
-      },
-      "required": ["path", "old", "new"],
-    },
-  },
-}
-
-TOOLS = [READ_TOOL, WRITE_TOOL, SHELL_TOOL, EDIT_TOOL]
-WORKDIR = os.getcwd()
-WORKROOT = os.path.realpath(WORKDIR)
-_read_paths = set()
-
-
-def abspath(path):
-  """Return the absolute path to a file."""
-  return os.path.realpath(os.path.join(WORKROOT, path))
-
-
-def in_workspace(full):
-  """Return True if the path is in a workspace."""
-  return WORKROOT == full or full.startswith(WORKROOT + os.sep)
-
-
-def read_file(path):
-  """Read a UTF-8 text file and return its contents.
-  Refuse binaries; decode leniently; no line numbers.
-  """
-  try:
-    with open(path, "rb") as f:
-      data = f.read()
-  except FileNotFoundError:
-    return f"File not found {path}"
-  except OSError:
-    return f"Error: File {path} cannot be read"
-
-  if b"\x00" in data:
-    return f"{path} is a binary file; refusing to read"
-
-  _read_paths.add(abspath(path))
-  return data.decode("utf-8", errors="replace")
-
-
-def run_shell(command, timeout=30):
-  """Run a shell command and return its output."""
-  try:
-    proc = subprocess.run(
-      ["bash", "--norc", "--noprofile", "-c", command],
-      cwd=WORKDIR,
-      stdout=subprocess.PIPE,
-      stderr=subprocess.STDOUT,
-      text=True,
-      timeout=min(timeout, 600),
-    )
-  except subprocess.TimeoutExpired:
-    return f"timed out after {timeout}s"
-  return f"exit {proc.returncode}\n{proc.stdout[:10000]}"
-
-
-def write_file(path, content):
-  """Create and/or write a UTF-8 text file."""
-  full = abspath(path)
-  if not in_workspace(full):
-    return f"refused: cannot write to files {path} outside of the working directory"
-  if os.path.exists(full) and full not in _read_paths:
-    return f"refused: {full} already exists; please read before overwriting"
-  os.makedirs(os.path.dirname(full), exist_ok=True)
-  with open(full, "w", encoding="utf-8") as f:
-    f.write(content)
-  _read_paths.add(full)
-
-  return f"successfully wrote to {path}; bytes written {len(content)}"
-
-
-def edit_file(path, old, new):
-  """Edit a UTF-8 text file. Replace the old content with new"""
-  full = abspath(path)
-  if full not in _read_paths:
-    return f"refused: please read before editing {path}"
-  if not os.path.exists(full):
-    return f"refused: {full} does not exist"
-  with open(full, encoding="utf-8") as f:
-    text = f.read()
-  n = text.count(old)
-
-  if n == 0:
-    return "refused: no match found to edit the file"
-  if n > 1:
-    return (
-      f"refused: found {n} matches - add surrounding context so that match is unique"
-    )
-
-  new_text = text.replace(old, new)
-  with open(full, "w", encoding="utf-8") as f:
-    f.write(new_text)
-
-  return f"successfully edited {path}; bytes written {len(new_text)}"
-
-
-def dispatch(name, args):
-  """Run a tool that is passed in as an argument.
-  Returns unknown tool error if tool not found.
-  """
-  if name == "read":
-    path = args.get("path")
-    if not isinstance(path, str):
-      return f"Path must be a string; got {path}"
-
-    return read_file(path)
-  elif name == "write":
-    path, content = args.get("path"), args.get("content")
-    if not isinstance(path, str) or not isinstance(content, str):
-      return "write requires string path and content"
-
-    return write_file(path, content)
-  elif name == "shell":
-    command = args.get("command")
-    if not isinstance(command, str):
-      return "shell requires a string 'command'"
-    try:
-      timeout = int(args.get("timeout", 30))
-    except TypeError, ValueError:
-      return "shell 'timeout' must be a number of seconds"
-
-    return run_shell(command, timeout)
-  elif name == "edit":
-    path, old, new = args.get("path"), args.get("old"), args.get("new")
-    if (
-      not isinstance(path, str) or not isinstance(old, str) or not isinstance(new, str)
-    ):
-      return "edit requires string path and string old and string new"
-    return edit_file(path, old, new)
-
-  return f"Error: Tool name {name} not found"
-
-
-def run_turn(messages, system_prompt):
-  while True:
-    with ui.thinking("thinking..."):
-      turn = complete(messages, system_prompt, TOOLS)
-    session.add(messages, turn.message)
-    if turn.note:
-      ui.print_note(turn.note)
-
-    if not turn.tool_calls:
-      return turn.message["content"]
-
-    for tool_call in turn.tool_calls:
-      if tool_call.parse_error:
-        result = f"Error: {tool_call.parse_error}"
-      else:
-        ui.print_tool_call(tool_call.name, tool_call.args)
-        started = time.monotonic()
-        with ui.thinking(f"running {tool_call.name}..."):
-          result = dispatch(tool_call.name, tool_call.args)
-        ui.print_tool_result(result, elapsed=time.monotonic() - started)
-
-      session.add(
-        messages, {"role": "tool", "tool_call_id": tool_call.id, "content": result}
-      )
+from agent.loop import run_turn
+from agent.prompts import SYSTEM_PROMPT
 
 
 def args_parse():
   p = argparse.ArgumentParser(prog="agent")
-  p.add_argument(
+  g = p.add_mutually_exclusive_group()
+  g.add_argument(
     "--resume",
     nargs="?",
     const=session.Resume.LATEST,
@@ -242,45 +17,57 @@ def args_parse():
     metavar="PATH",
     help="resume a session; latest if none is provided",
   )
+  g.add_argument(
+    "--list-sessions",
+    action="store_true",
+    help="pick a session to resume from a list",
+  )
 
   return p.parse_args()
 
 
+def resolve_session(args):
+  """Which session to resume, if any — the three entry paths converge here so
+  main() keeps exactly one load/use block.
+  """
+  if args.list_sessions:
+    records = session.listing()
+    if not records:
+      raise SystemExit("no sessions yet")
+    ui.print_sessions(records)
+    choice = ui.ask_session(len(records))
+    if choice is None:
+      raise SystemExit(0)  # backing out is not an error, and must start nothing
+    return records[choice].path
+
+  if args.resume is None:
+    return None
+
+  if args.resume == session.Resume.LATEST:
+    resumed = session.latest()
+    if resumed is None:
+      raise SystemExit("Latest session not found")
+    return resumed
+
+  resumed = pathlib.Path(args.resume).expanduser()
+  if not resumed.exists():
+    raise SystemExit(f"session {resumed} not found")
+  return resumed
+
+
 def main():
   args = args_parse()
-  system_prompt = (
-    "You are a coding agent working in the current directory. \n"
-    "You have these tools:\n"
-    "read(path) returns the UTF-8 contents of \n "
-    "a text file. Use it to inspect files before answering questions about them.\n"
-    "write(path, content) creates or overwrites a file; you must read an \n"
-    "existing file before overwriting it.\n"
-    "shell(command, timeout=30) runs a single bash command from the working \n"
-    "directory; it is one-shot, so no cwd, environment, or virtualenv \n"
-    "persists between calls — chain dependent steps in one command with &&.\n"
-    "Use it to explore and navigate the project (ls, grep -rn, find, cat) \n"
-    "rather than expecting dedicated search tools. Raise the timeout for slow\n"
-    "operations like builds, tests, or docker, which may produce no output until\n"
-    "they finish."
-  )
 
   messages = []
-  resumed = None
-  if args.resume is not None:
-    if args.resume == session.Resume.LATEST:
-      resumed = session.latest()
-      if resumed is None:
-        raise SystemExit("Latest session not found")
-    else:
-      resumed = pathlib.Path(args.resume).expanduser()
-      if not resumed.exists():
-        raise SystemExit(f"session {resumed} not found")
+  resumed = resolve_session(args)
+  if resumed:
     messages = session.load(resumed)
     session.use(resumed)
 
-  print("agent ready (ctrl-c or ctrl-d to quit)")
+  ui.print_banner()
   if resumed:
     ui.print_note(f"resumed {resumed.name} — {len(messages)} messages")
+    ui.print_transcript(messages)
 
   while True:
     try:
@@ -293,7 +80,7 @@ def main():
       continue
 
     session.add(messages, {"role": "user", "content": line})
-    answer = run_turn(messages, system_prompt)
+    answer = run_turn(messages, SYSTEM_PROMPT)
     ui.print_agent_message(answer)
 
 
